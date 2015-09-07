@@ -1,0 +1,1291 @@
+# coding: utf-8
+# Usage:
+# $ gem install rmath3d_plain
+# $ ruby test_volonoi.rb
+require 'pp'
+require 'opengl'
+require 'glfw'
+require 'rmath3d/rmath3d_plain'
+require_relative 'nanovg'
+require_relative 'compgeom/delaunay'
+require_relative 'compgeom/convex_hull'
+require_relative 'compgeom/voronoi'
+
+
+OpenGL.load_lib()
+GLFW.load_lib()
+NanoVG.load_dll('libnanovg_gl3.dylib', render_backend: :gl3)
+
+include OpenGL
+include GLFW
+include NanoVG
+include RMath3D
+
+$plot_spiral = false
+$plot_random = false
+
+class Graph
+  attr_accessor :nodes, :triangle_indices, :hull_indices, :voronoi_cells, :voronoi_vertices
+
+  def initialize
+    @nodes = []
+    @undo_insert_index = -1
+    @node_radius = 10.0
+
+    @miniball_radius = -1.0
+    @miniball_center_x = 0.0
+    @miniball_center_y = 0.0
+
+    @triangle_indices = []
+    @hull_indices = []
+
+    @voronoi_cells = []
+    @voronoi_vertices = []
+  end
+
+  def add_node(x, y)
+    @nodes << RVec2.new(x, y)
+  end
+
+  def insert_node(point_x, point_y)
+    if @nodes.length < 3
+      return add_node(point_x, point_y)
+    end
+    point = RVec2.new(point_x, point_y)
+
+    # Calculate distance from point to all edges.
+    # Ref. : http://stackoverflow.com/questions/849211/shortest-distance-between-a-point-and-a-line-segment
+    distances = Array.new(@nodes.length) { -Float::MAX }
+    @nodes.each_with_index do |node_current, index|
+      node_next = @nodes[(index + 1) % @nodes.length]
+      edge_dir = node_next - node_current
+      edge_squared_length = edge_dir.getLengthSq
+      if edge_squared_length < Float::EPSILON
+        distances[index] = (node_current - point).getLength
+        next
+      end
+      edge_start_to_point = point - node_current
+      t = RVec2.dot(edge_start_to_point, edge_dir) / edge_squared_length
+      if t < 0
+        distances[index] = (node_current - point).getLength
+      elsif t > 1
+        distances[index] = (node_next - point).getLength
+      else
+        projection = node_current + t * edge_dir
+        distances[index] = (projection - point).getLength
+      end
+    end
+
+    # Find nearest edge and insert new Node as a dividing point.
+    minimum_distances = distances.min_by(2) {|d| d}
+    nearest_edge_index = if minimum_distances[0] != minimum_distances[1]
+                           distances.find_index( minimum_distances[0] )
+                         else
+                           # If the input point is in vertex Voronoi region, choose appropriate edge.
+                           edge_node_indices = []
+                           distances.each_with_index do |d, i|
+                             edge_node_indices << [i, (i + 1) % nodes.length] if d == minimum_distances[0]
+                             break if edge_node_indices.length == 2
+                           end
+                           nearest_node_index = (edge_node_indices[0] & edge_node_indices[1])[0]
+
+                           other_node_index = nearest_node_index == edge_node_indices[0][0] ? edge_node_indices[0][1] : edge_node_indices[0][0]
+                           edge0 = @nodes[nearest_node_index] - @nodes[other_node_index]
+                           edge0.normalize!
+
+                           edge0_to_point = point - @nodes[other_node_index]
+                           edge0_to_point.normalize!
+
+
+                           other_node_index = nearest_node_index == edge_node_indices[1][0] ? edge_node_indices[1][1] : edge_node_indices[1][0]
+                           edge1 = @nodes[nearest_node_index] - @nodes[other_node_index]
+                           edge1.normalize!
+
+                           edge1_to_point = point - @nodes[other_node_index]
+                           edge1_to_point.normalize!
+
+                           dot_0 = RVec2.dot(edge0, edge0_to_point)
+                           dot_1 = RVec2.dot(edge1, edge1_to_point)
+
+                           if dot_0 < dot_1
+                             edge_node_indices[0][0]
+                           else
+                             edge_node_indices[1][0]
+                           end
+                         end
+
+    @nodes.insert( nearest_edge_index + 1, RVec2.new(point_x, point_y) )
+    @undo_insert_index = nearest_edge_index + 1
+  end
+
+  def undo_insert
+    if @undo_insert_index >= 0
+      @nodes.delete_at(@undo_insert_index)
+      @undo_insert_index = -1
+    end
+  end
+
+  def remove_nearest_node(point_x, point_y)
+    distances = Array.new(@nodes.length) { -Float::MAX }
+    @nodes.each_with_index do |node_current, index|
+      distances[index] = (node_current.x - point_x)**2 + (node_current.y - point_y)**2
+    end
+    minimum_distance = distances.min_by {|d| d}
+    if minimum_distance <= @node_radius ** 2
+      nearest_node_index = distances.find_index( minimum_distance )
+      @nodes.delete_at(nearest_node_index)
+      @undo_insert_index = -1
+    end
+  end
+
+  def smallest_enclosing_circle
+    r, c = SmallestEnclosingCircle.calculate(@nodes)
+    @miniball_radius = r
+    @miniball_center_x = c.x
+    @miniball_center_y = c.y
+  end
+
+  def triangulate
+    return if @nodes.length < 3
+    @triangle_indices, @triangles = DelaunayTriangulation.calculate(@nodes)
+  end
+
+  def convex_hull
+    return if @nodes.length < 3
+    @hull_indices = ConvexHull.calculate(@nodes)
+  end
+
+  def voronoi_diagram
+    return if @nodes.length < 3
+    @voronoi_cells, @voronoi_vertices = VoronoiDiagram.calculate(@nodes)
+  end
+
+  def clear
+    @nodes.clear
+    @miniball_radius = -1.0
+    @miniball_center_x = 0.0
+    @miniball_center_y = 0.0
+    @triangle_indices.clear if @triangle_indices != nil
+    @triangles.clear if @triangles != nil
+    @hull_indices.clear if @hull_indices != nil
+    @voronoi_cells.clear
+    @voronoi_vertices.clear
+  end
+
+  def render(vg, render_edge: false, render_node: true)
+    # Triangles
+    if @triangle_indices.length > 0
+      color = nvgRGBA(0,255,0, 255)
+      lw = @node_radius * 0.5
+      @triangle_indices.each do |indices|
+        nvgLineCap(vg, NVG_ROUND)
+        nvgLineJoin(vg, NVG_ROUND)
+        nvgBeginPath(vg)
+        nvgMoveTo(vg, @nodes[indices[0]].x, @nodes[indices[0]].y)
+        nvgLineTo(vg, @nodes[indices[1]].x, @nodes[indices[1]].y)
+        nvgLineTo(vg, @nodes[indices[2]].x, @nodes[indices[2]].y)
+        nvgClosePath(vg)
+        color = nvgRGBA(0,255,0, 64)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+        color = nvgRGBA(255,128,0, 255)
+        nvgStrokeColor(vg, color)
+        nvgStrokeWidth(vg, lw)
+        nvgStroke(vg)
+      end
+    end
+
+    if @triangles != nil && @triangles.length > 0
+      lw = @node_radius * 0.1
+      @triangles.each do |tri|
+        # circumcircle
+        color = nvgRGBA(255,0,0, 64)
+        nvgBeginPath(vg)
+        nvgCircle(vg, tri.cc.x, tri.cc.y, tri.cr)
+        nvgStrokeColor(vg, color)
+        nvgStrokeWidth(vg, lw)
+        nvgStroke(vg)
+        # circumcenter
+        color = nvgRGBA(0,0,255, 255)
+        nvgBeginPath(vg)
+        nvgCircle(vg, tri.cc.x, tri.cc.y, 4.0)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+      end
+    end
+
+    # Edges
+    if render_edge and @nodes.length >= 2
+      color = nvgRGBA(255,128,0, 255)
+      lw = @node_radius * 0.5
+      nvgLineCap(vg, NVG_ROUND)
+      nvgLineJoin(vg, NVG_ROUND)
+      nvgBeginPath(vg)
+      @nodes.length.times do |i|
+        if i == 0
+          nvgMoveTo(vg, @nodes[0].x, @nodes[0].y)
+        else
+          nvgLineTo(vg, @nodes[i].x, @nodes[i].y)
+        end
+      end
+      nvgClosePath(vg)
+      nvgStrokeColor(vg, color)
+      nvgStrokeWidth(vg, lw)
+      nvgStroke(vg)
+    end
+
+    # Convex Hull
+    if @hull_indices.length > 0
+      lw = @node_radius * 0.75
+      nvgLineCap(vg, NVG_ROUND)
+      nvgLineJoin(vg, NVG_ROUND)
+      nvgBeginPath(vg)
+      @hull_indices.each_with_index do |hull_index, i|
+        if i == 0
+          nvgMoveTo(vg, @nodes[hull_index].x, @nodes[hull_index].y)
+        else
+          nvgLineTo(vg, @nodes[hull_index].x, @nodes[hull_index].y)
+        end
+      end
+      nvgClosePath(vg)
+      color = nvgRGBA(64,32,192, 255)
+      nvgStrokeColor(vg, color)
+      nvgStrokeWidth(vg, lw)
+      nvgStroke(vg)
+
+      @hull_indices.each do |hull_index|
+        nvgBeginPath(vg)
+        sc = 1.5
+        sc2 = sc * 2
+        wh = @node_radius * sc2
+        nvgRoundedRect(vg, @nodes[hull_index].x - @node_radius * sc, @nodes[hull_index].y - @node_radius * sc, wh, wh, @node_radius * 0.75)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+      end
+    end
+
+    # Voronoi Diagram
+    if @voronoi_cells.length > 0
+      @voronoi_cells.each_with_index do |vc, vc_index|
+
+        lw = @node_radius * 0.25
+        nvgLineCap(vg, NVG_ROUND)
+        nvgLineJoin(vg, NVG_ROUND)
+        if vc.bounded
+
+          nvgBeginPath(vg)
+          vc.vertex_indices.each_with_index do |vertex_index, i|
+            if i == 0
+              nvgMoveTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+            else
+              nvgLineTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+            end
+          end
+          nvgClosePath(vg)
+          color = nvgRGBA(255,255,255, 128)
+          nvgStrokeColor(vg, color)
+          nvgStrokeWidth(vg, lw)
+          nvgStroke(vg)
+
+        else # vc.bounded == false
+
+          if vc.vertex_indices.length > 0
+            nvgBeginPath(vg)
+            vc.vertex_indices.each_with_index do |vertex_index, i|
+              if i == 0
+                nvgMoveTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+              else
+                nvgLineTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+              end
+            end
+            color = nvgRGBA(255,255,255, 128)
+            nvgStrokeColor(vg, color)
+            nvgStrokeWidth(vg, lw)
+            nvgStroke(vg)
+          end
+
+          vc.ray_origin_indices.each_with_index do |vertex_index, i|
+            nvgBeginPath(vg)
+            ray_x = @voronoi_vertices[vertex_index].x + 10000.0 * vc.ray_directions[i].x
+            ray_y = @voronoi_vertices[vertex_index].y + 10000.0 * vc.ray_directions[i].y
+            nvgMoveTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+            nvgLineTo(vg, ray_x, ray_y)
+            nvgClosePath(vg)
+            color = nvgRGBA(255,0,255, 128)
+            nvgStrokeColor(vg, color)
+            nvgStrokeWidth(vg, lw)
+            nvgStroke(vg)
+          end
+
+        end
+      end
+    end
+
+    # Nodes
+    if render_node and @nodes.length > 0
+      color = nvgRGBA(0,192,255, 255)
+      nvgBeginPath(vg)
+      @nodes.each do |node|
+        nvgCircle(vg, node.x, node.y, @node_radius)
+        nvgFillColor(vg, color)
+      end
+      nvgFill(vg)
+    end
+
+    # Smallest Enclosing Circle
+=begin
+    if @miniball_radius > 0
+      color = nvgRGBA(255,0,0, 64)
+      nvgBeginPath(vg)
+      nvgCircle(vg, @miniball_center_x, @miniball_center_y, @miniball_radius)
+      nvgFillColor(vg, color)
+      nvgFill(vg)
+    end
+=end
+
+  end
+end
+
+$graph = Graph.new
+
+
+key = GLFW::create_callback(:GLFWkeyfun) do |window, key, scancode, action, mods|
+  if key == GLFW_KEY_ESCAPE && action == GLFW_PRESS # Press ESC to exit.
+    glfwSetWindowShouldClose(window, GL_TRUE)
+  elsif key == GLFW_KEY_R && action == GLFW_PRESS # Press 'R' to clear graph.
+    $graph.clear
+  end
+end
+
+$spiral_theta = 0.0
+$spiral_radius = Float::EPSILON
+
+mouse = GLFW::create_callback(:GLFWmousebuttonfun) do |window_handle, button, action, mods|
+  if $plot_spiral
+    sx = $spiral_radius * Math.cos($spiral_theta)
+    sy = $spiral_radius * Math.sin($spiral_theta)
+    sx += 1280 * 0.5
+    sy += 720 * 0.5
+    $graph.add_node(sx, sy) # insert_node(sx, sy)
+    $graph.triangulate
+    $graph.convex_hull
+    $graph.voronoi_diagram
+    $spiral_theta += 22.0 * Math::PI/180 # Math::PI * (3 - Math.sqrt(5)) # golden angle in radian
+    $spiral_radius += 4.0
+    return
+  end
+
+  if $plot_random
+    sx = rand(1280.0)
+    sy = rand(720.0)
+    $graph.add_node(sx, sy) # insert_node(sx, sy)
+    $graph.triangulate
+    $graph.convex_hull
+    $graph.voronoi_diagram
+    return
+  end
+
+  if button == GLFW_MOUSE_BUTTON_LEFT && action == 0
+    mx_buf = ' ' * 8
+    my_buf = ' ' * 8
+    glfwGetCursorPos(window_handle, mx_buf, my_buf)
+    mx = mx_buf.unpack('D')[0]
+    my = my_buf.unpack('D')[0]
+    if (mods & GLFW_MOD_SHIFT) != 0
+      $graph.remove_nearest_node(mx, my)
+      if $graph.nodes.length <= 2
+        $graph.clear
+      else
+        $graph.triangulate
+        $graph.smallest_enclosing_circle
+        $graph.convex_hull
+        $graph.voronoi_diagram
+      end
+    else
+      $graph.add_node(mx, my) # insert_node(mx, my)
+      $graph.triangulate
+      $graph.smallest_enclosing_circle
+      $graph.convex_hull
+      $graph.voronoi_diagram
+    end
+  end
+end
+
+
+class FontPlane
+  def initialize
+    @fonts = []
+  end
+
+  def load(vg, name="sans", ttf="data/GenShinGothic-Bold.ttf")
+    font_handle = nvgCreateFont(vg, name, ttf)
+    if font_handle == -1
+      puts "Could not add font."
+      return -1
+    end
+    @fonts << font_handle
+  end
+
+  def render(vg, x, y, width, height, text, name: "sans", color: nvgRGBA(255,255,255,255))
+    rows_buf = FFI::MemoryPointer.new(NVGtextRow, 3)
+    glyphs_buf = FFI::MemoryPointer.new(NVGglyphPosition, 100)
+    lineh_buf = '        '
+    lineh = 0.0
+
+    nvgSave(vg)
+
+    nvgFontSize(vg, 44.0)
+    nvgFontFace(vg, name)
+    nvgTextAlign(vg, NVG_ALIGN_LEFT|NVG_ALIGN_TOP)
+    nvgTextMetrics(vg, nil, nil, lineh_buf)
+    lineh = lineh_buf.unpack('F')[0]
+
+    text_start = text
+    text_end = nil
+    while ((nrows = nvgTextBreakLines(vg, text_start, text_end, width, rows_buf, 3)))
+      rows = nrows.times.collect do |i|
+        NVGtextRow.new(rows_buf + i * NVGtextRow.size)
+      end
+      nrows.times do |i|
+        row = rows[i]
+
+        nvgBeginPath(vg)
+#        nvgFillColor(vg, nvgRGBA(255,255,255, 0))
+#        nvgRect(vg, x, y, row[:width], lineh)
+#        nvgFill(vg)
+
+        nvgFillColor(vg, color)
+        nvgText(vg, x, y, row[:start], row[:end])
+
+        y += lineh
+      end
+      if rows.length > 0
+        text_start = rows[nrows-1][:next]
+      else
+        break
+      end
+    end
+
+    nvgRestore(vg)
+  end
+end
+
+class Graph
+  attr_accessor :nodes, :triangle_indices, :polygon
+
+  def initialize
+    @nodes = []
+    @polygon = []
+
+    @undo_insert_index = -1
+    @node_radius = 10.0
+
+    @triangle_indices = []
+    @hull_indices = []
+  end
+
+  def add_node(x, y)
+    @nodes << RVec2.new(x, y)
+    @polygon << @nodes.last
+  end
+
+  def connecter_edge?(edge, same_edge_pair)
+    is_connecter_edge = false
+    edge_sorted = edge.sort
+    same_edge_pair.each do |edge_pair|
+      if edge_pair[0].sort == edge_sorted || edge_pair[1].sort == edge_sorted
+        is_connecter_edge = true
+        break
+      end
+    end
+    return is_connecter_edge
+  end
+  private :connecter_edge?
+
+  def insert_node(point_x, point_y)
+    if @polygon.length < 3
+      add_node(point_x, point_y)
+      if @polygon.length == 3 && Triangle.ccw(@polygon[0], @polygon[1], @polygon[2]) > 0
+        @polygon[1], @polygon[2] = @polygon[2], @polygon[1]
+      end
+      return
+    end
+    point = RVec2.new(point_x, point_y)
+
+    edges = []
+    @polygon.length.times do |i|
+      edges << [i, (i + 1) % @polygon.length] # TODO : Remove duplicate edge
+    end
+
+    # Calculate distance from point to all edges.
+    distances = Array.new(@polygon.length) { -Float::MAX }
+    edges.each_with_index do |edge, i|
+      distances[i] = SegmentIntersection.distance_from_point(point, @polygon[edge[0]], @polygon[edge[1]])
+    end
+
+    # Find nearest edge and insert new Node as a dividing point.
+    insertion_index = -1
+
+    same_edge_pair = [] # store connecter edges
+    edges.each_with_index do |edge_a, idx_a|
+      edges.each_with_index do |edge_b, idx_b|
+        next if idx_a >= idx_b
+        if (@polygon[edge_a[0]] == @polygon[edge_b[0]] && @polygon[edge_a[1]] == @polygon[edge_b[1]]) ||
+           (@polygon[edge_a[0]] == @polygon[edge_b[1]] && @polygon[edge_a[1]] == @polygon[edge_b[0]])
+          same_edge_pair << [edge_a, edge_b]
+        end
+      end
+    end
+
+    minimum_distances = distances.min_by(2) {|d| d}
+    if (minimum_distances[0] - minimum_distances[1]).abs > 1.0e-6
+      # Found one nearest edge.
+      i = distances.find_index( minimum_distances[0] )
+      nearest_edge = edges[i]
+
+      is_connecter_edge = connecter_edge?(nearest_edge, same_edge_pair)
+
+      if not is_connecter_edge
+        # Normal edge
+        self_intersect = SegmentIntersection.check(@polygon + [point], edges - [nearest_edge] + [[nearest_edge[0], @polygon.length], [@polygon.length, nearest_edge[1]]])
+        if not self_intersect
+          insertion_index = i
+        end
+      else
+        # Connecter edge
+        indices = []
+        distances.each_with_index do |d, i|
+          if d == minimum_distances[0]
+            indices << i
+          end
+        end
+        p "indices.length == #{indices.length}, != 2" if indices.length != 2
+        nearest_edges = [edges[indices[0]], edges[indices[1]]]
+
+        e0_ccw = Triangle.ccw(@polygon[nearest_edges[0][0]], point, @polygon[nearest_edges[0][1]]) > 0
+        e1_ccw = Triangle.ccw(@polygon[nearest_edges[1][0]], point, @polygon[nearest_edges[1][1]]) > 0
+        if e0_ccw
+          insertion_index = indices[0]
+        else # e1_ccw
+          insertion_index = indices[1]
+        end
+      end
+    else
+
+      # If two or more nearest edges found...
+      # TODO : implement
+      #          for vertex voronoi case
+      #          [DONE] for connecter edge case
+
+      # Inside polygon connecter edge
+      indices = []
+      distances.each_with_index do |d, i|
+        if (d - minimum_distances[0]).abs <= 1.0e-6
+          indices << i
+        end
+      end
+      p "indices.length != 2" if indices.length != 2
+      nearest_edges = [edges[indices[0]], edges[indices[1]]]
+
+      is_connecter_edge = false
+      if (@polygon[nearest_edges[0][0]] == @polygon[nearest_edges[1][0]] && @polygon[nearest_edges[0][1]] == @polygon[nearest_edges[1][1]]) || (@polygon[nearest_edges[0][1]] == @polygon[nearest_edges[1][0]] && @polygon[nearest_edges[0][0]] == @polygon[nearest_edges[1][1]])
+        is_connecter_edge = true
+      end
+
+      if not is_connecter_edge
+        # the input point is placed in the vertex Voronoi region
+        # p nearest_edges
+      else
+        # Divide one of the edges that never break the graph ordering (the one should make a counter-clockwise triangle with the input point)
+        e0_ccw = Triangle.ccw(@polygon[nearest_edges[0][0]], point, @polygon[nearest_edges[0][1]]) > 0
+        e1_ccw = Triangle.ccw(@polygon[nearest_edges[1][0]], point, @polygon[nearest_edges[1][1]]) > 0
+        if e0_ccw
+          insertion_index = indices[0]
+        else # e1_ccw
+          insertion_index = indices[1]
+        end
+      end
+    end
+
+    if insertion_index == -1
+      # puts "fail"
+      return
+    end
+
+    @nodes << RVec2.new(point_x, point_y)
+    @polygon.insert( insertion_index + 1, @nodes.last )
+#    @undo_insert_index = insertion_index + 1
+  end
+
+  def undo_insert
+    if @undo_insert_index >= 0
+      @nodes.delete_at(@undo_insert_index)
+      @undo_insert_index = -1
+      if $outer_graph.nodes.length <= 2
+        $outer_graph.clear
+      else
+        $outer_graph.triangulate
+      end
+    end
+  end
+
+  def node_removable?(node_index)
+    #
+    # TODO : Original implementation is for @node, not for @polygon. Fix it.
+    #
+    segment_indices = []
+    new_edge_index = []
+
+    node = @nodes[node_index]
+
+    @polygon.length.times do |i|
+      # TODO : Remove duplicate edge
+      if @polygon[i] == node
+        new_edge_index << (i + 1) % @polygon.length
+        next
+      end
+      if @polygon[(i + 1) % @polygon.length] == node
+        new_edge_index << i
+        next
+      end
+      # p new_edge_index.length
+      segment_indices << [i, (i + 1) % @polygon.length]
+    end
+
+    return SegmentIntersection.check(@polygon, segment_indices + [new_edge_index]) == false
+  end
+
+  def remove_nearest_node(point_x, point_y)
+    return if @nodes.empty?
+    distances = Array.new(@nodes.length) { -Float::MAX }
+    @nodes.each_with_index do |node_current, index|
+      distances[index] = (node_current.x - point_x)**2 + (node_current.y - point_y)**2
+    end
+    minimum_distance = distances.min_by {|d| d}
+    if minimum_distance <= @node_radius ** 2
+      nearest_node_index = distances.find_index( minimum_distance )
+      @undo_insert_index = -1
+      if node_removable?(nearest_node_index)
+        @polygon.delete_if {|p| p == @nodes[nearest_node_index]}
+        @nodes.delete_at(nearest_node_index)
+      else
+        puts "[WARN] remove_nearest_node : Failed. Removing the node #{nearest_node_index} will make self-intersecting polygon."
+      end
+    end
+  end
+
+  def triangulate
+    return false if @nodes.length < 3
+    indices = ConvexPartitioning.triangulate(@polygon)
+    @triangle_indices = indices == nil ? [] : indices
+  end
+
+  def clear
+    @nodes.clear
+    @polygon.clear
+    @triangle_indices.clear if @triangle_indices != nil
+  end
+
+  def render(vg, render_edge: true, render_node: true, color_scheme: :outer)
+    # Triangles
+    if @triangle_indices.length > 0
+      color = nvgRGBA(0,255,0, 255)
+      lw = @node_radius * 0.5
+      @triangle_indices.each do |indices|
+        nvgLineCap(vg, NVG_ROUND)
+        nvgLineJoin(vg, NVG_ROUND)
+        nvgBeginPath(vg)
+        nvgMoveTo(vg, @polygon[indices[0]].x, @polygon[indices[0]].y)
+        nvgLineTo(vg, @polygon[indices[1]].x, @polygon[indices[1]].y)
+        nvgLineTo(vg, @polygon[indices[2]].x, @polygon[indices[2]].y)
+        nvgClosePath(vg)
+        color = nvgRGBA(0,255,0, 64)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+        color = nvgRGBA(255,128,0, 255)
+        nvgStrokeColor(vg, color)
+        nvgStrokeWidth(vg, lw)
+        nvgStroke(vg)
+      end
+    end
+
+    # Edges
+    if render_edge and @nodes.length >= 2
+      color = color_scheme == :outer ? nvgRGBA(0,0,255, 255) : nvgRGBA(255,0,0, 255)
+      lw = @node_radius * 0.5
+      nvgLineCap(vg, NVG_ROUND)
+      nvgLineJoin(vg, NVG_ROUND)
+      nvgBeginPath(vg)
+      @polygon.length.times do |i|
+        if i == 0
+          nvgMoveTo(vg, @polygon[0].x, @polygon[0].y)
+        else
+          nvgLineTo(vg, @polygon[i].x, @polygon[i].y)
+        end
+      end
+      nvgClosePath(vg)
+      nvgStrokeColor(vg, color)
+      nvgStrokeWidth(vg, lw)
+      nvgStroke(vg)
+    end
+
+    # Nodes
+    if render_node and @nodes.length > 0
+      color = color_scheme == :outer ? nvgRGBA(0,192,255, 255) : nvgRGBA(255,192,0, 255)
+      nvgBeginPath(vg)
+      @nodes.each do |node|
+        nvgCircle(vg, node.x, node.y, @node_radius)
+        nvgFillColor(vg, color)
+      end
+      nvgFill(vg)
+    end
+
+  end
+end
+
+$font_plane = FontPlane.new
+
+$outer_graph = Graph.new
+$inner_graph = Graph.new
+$current_graph = $outer_graph
+
+key = GLFW::create_callback(:GLFWkeyfun) do |window, key, scancode, action, mods|
+  if key == GLFW_KEY_ESCAPE && action == GLFW_PRESS # Press ESC to exit.
+    glfwSetWindowShouldClose(window, GL_TRUE)
+  elsif key == GLFW_KEY_SPACE && action == GLFW_PRESS
+    $current_graph = $current_graph == $inner_graph ? $outer_graph : $inner_graph
+  elsif key == GLFW_KEY_R && action == GLFW_PRESS # Press 'R' to clear graph.
+    $current_graph.clear
+  elsif key == GLFW_KEY_M && action == GLFW_PRESS # Press 'M' to merge inner polygon.
+    if $outer_graph.polygon.length >= 3 && $inner_graph.polygon.length >= 3
+      $outer_graph.polygon, appended_nodes = ConvexPartitioning.merge_inner_polygon($outer_graph.polygon, $inner_graph.polygon)
+      $outer_graph.nodes.concat(appended_nodes)
+      $outer_graph.triangulate
+    end
+  elsif key == GLFW_KEY_Z && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL != 0) # Remove the last node your added by Ctrl-Z.
+    $current_graph.undo_insert
+  end
+end
+
+mouse = GLFW::create_callback(:GLFWmousebuttonfun) do |window_handle, button, action, mods|
+  if button == GLFW_MOUSE_BUTTON_LEFT && action == 0
+    mx_buf = ' ' * 8
+    my_buf = ' ' * 8
+    glfwGetCursorPos(window_handle, mx_buf, my_buf)
+    mx = mx_buf.unpack('D')[0]
+    my = my_buf.unpack('D')[0]
+    if (mods & GLFW_MOD_SHIFT) != 0
+      $current_graph.remove_nearest_node(mx, my)
+      if $current_graph.nodes.length <= 2
+        $current_graph.clear
+      else
+        $current_graph.triangulate
+      end
+    else
+      $current_graph.insert_node(mx, my)
+      $current_graph.triangulate
+    end
+  end
+end
+$plot_spiral = false
+$plot_random = false
+
+# Saves as .tga
+$ss_name = "ss0000.tga"
+$ss_id = 0
+def save_screenshot(w, h, name)
+  image = FFI::MemoryPointer.new(:uint8, w*h*4)
+  return if image == nil
+
+  glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_INT_8_8_8_8_REV, image)
+
+  File.open( name, 'wb' ) do |fout|
+    fout.write [0].pack('c')      # identsize
+    fout.write [0].pack('c')      # colourmaptype
+    fout.write [2].pack('c')      # imagetype
+    fout.write [0].pack('s')      # colourmapstart
+    fout.write [0].pack('s')      # colourmaplength
+    fout.write [0].pack('c')      # colourmapbits
+    fout.write [0].pack('s')      # xstart
+    fout.write [0].pack('s')      # ystart
+    fout.write [w].pack('s')      # image_width
+    fout.write [h].pack('s')      # image_height
+    fout.write [8 * 4].pack('c')  # image_bits_per_pixel
+    fout.write [8].pack('c')      # descriptor
+
+    fout.write image.get_bytes(0, w*h*4)
+  end
+end
+
+class Graph
+  attr_accessor :nodes, :triangle_indices, :hull_indices, :voronoi_cells, :voronoi_vertices
+
+  def initialize
+    @nodes = []
+    @undo_insert_index = -1
+    @node_radius = 10.0
+
+    @miniball_radius = -1.0
+    @miniball_center_x = 0.0
+    @miniball_center_y = 0.0
+
+    @triangle_indices = []
+    @hull_indices = []
+
+    @voronoi_cells = []
+    @voronoi_vertices = []
+  end
+
+  def add_node(x, y)
+    @nodes << RVec2.new(x, y)
+  end
+
+  def insert_node(point_x, point_y)
+    if @nodes.length < 3
+      return add_node(point_x, point_y)
+    end
+    point = RVec2.new(point_x, point_y)
+
+    # Calculate distance from point to all edges.
+    # Ref. : http://stackoverflow.com/questions/849211/shortest-distance-between-a-point-and-a-line-segment
+    distances = Array.new(@nodes.length) { -Float::MAX }
+    @nodes.each_with_index do |node_current, index|
+      node_next = @nodes[(index + 1) % @nodes.length]
+      edge_dir = node_next - node_current
+      edge_squared_length = edge_dir.getLengthSq
+      if edge_squared_length < Float::EPSILON
+        distances[index] = (node_current - point).getLength
+        next
+      end
+      edge_start_to_point = point - node_current
+      t = RVec2.dot(edge_start_to_point, edge_dir) / edge_squared_length
+      if t < 0
+        distances[index] = (node_current - point).getLength
+      elsif t > 1
+        distances[index] = (node_next - point).getLength
+      else
+        projection = node_current + t * edge_dir
+        distances[index] = (projection - point).getLength
+      end
+    end
+
+    # Find nearest edge and insert new Node as a dividing point.
+    minimum_distances = distances.min_by(2) {|d| d}
+    nearest_edge_index = if minimum_distances[0] != minimum_distances[1]
+                           distances.find_index( minimum_distances[0] )
+                         else
+                           # If the input point is in vertex Voronoi region, choose appropriate edge.
+                           edge_node_indices = []
+                           distances.each_with_index do |d, i|
+                             edge_node_indices << [i, (i + 1) % nodes.length] if d == minimum_distances[0]
+                             break if edge_node_indices.length == 2
+                           end
+                           nearest_node_index = (edge_node_indices[0] & edge_node_indices[1])[0]
+
+                           other_node_index = nearest_node_index == edge_node_indices[0][0] ? edge_node_indices[0][1] : edge_node_indices[0][0]
+                           edge0 = @nodes[nearest_node_index] - @nodes[other_node_index]
+                           edge0.normalize!
+
+                           edge0_to_point = point - @nodes[other_node_index]
+                           edge0_to_point.normalize!
+
+
+                           other_node_index = nearest_node_index == edge_node_indices[1][0] ? edge_node_indices[1][1] : edge_node_indices[1][0]
+                           edge1 = @nodes[nearest_node_index] - @nodes[other_node_index]
+                           edge1.normalize!
+
+                           edge1_to_point = point - @nodes[other_node_index]
+                           edge1_to_point.normalize!
+
+                           dot_0 = RVec2.dot(edge0, edge0_to_point)
+                           dot_1 = RVec2.dot(edge1, edge1_to_point)
+
+                           if dot_0 < dot_1
+                             edge_node_indices[0][0]
+                           else
+                             edge_node_indices[1][0]
+                           end
+                         end
+
+    @nodes.insert( nearest_edge_index + 1, RVec2.new(point_x, point_y) )
+    @undo_insert_index = nearest_edge_index + 1
+  end
+
+  def undo_insert
+    if @undo_insert_index >= 0
+      @nodes.delete_at(@undo_insert_index)
+      @undo_insert_index = -1
+    end
+  end
+
+  def remove_nearest_node(point_x, point_y)
+    distances = Array.new(@nodes.length) { -Float::MAX }
+    @nodes.each_with_index do |node_current, index|
+      distances[index] = (node_current.x - point_x)**2 + (node_current.y - point_y)**2
+    end
+    minimum_distance = distances.min_by {|d| d}
+    if minimum_distance <= @node_radius ** 2
+      nearest_node_index = distances.find_index( minimum_distance )
+      @nodes.delete_at(nearest_node_index)
+      @undo_insert_index = -1
+    end
+  end
+
+  def smallest_enclosing_circle
+    r, c = SmallestEnclosingCircle.calculate(@nodes)
+    @miniball_radius = r
+    @miniball_center_x = c.x
+    @miniball_center_y = c.y
+  end
+
+  def triangulate
+    return if @nodes.length < 3
+    @triangle_indices, @triangles = DelaunayTriangulation.calculate(@nodes)
+  end
+
+  def convex_hull
+    return if @nodes.length < 3
+    @hull_indices = ConvexHull.calculate(@nodes)
+  end
+
+  def voronoi_diagram
+    return if @nodes.length < 3
+    @voronoi_cells, @voronoi_vertices = VoronoiDiagram.calculate(@nodes)
+  end
+
+  def clear
+    @nodes.clear
+    @miniball_radius = -1.0
+    @miniball_center_x = 0.0
+    @miniball_center_y = 0.0
+    @triangle_indices.clear if @triangle_indices != nil
+    @triangles.clear if @triangles != nil
+    @hull_indices.clear if @hull_indices != nil
+    @voronoi_cells.clear
+    @voronoi_vertices.clear
+  end
+
+  def render(vg, render_edge: false, render_node: true)
+    # Triangles
+    if @triangle_indices.length > 0
+      color = nvgRGBA(0,255,0, 255)
+      lw = @node_radius * 0.5
+      @triangle_indices.each do |indices|
+        nvgLineCap(vg, NVG_ROUND)
+        nvgLineJoin(vg, NVG_ROUND)
+        nvgBeginPath(vg)
+        nvgMoveTo(vg, @nodes[indices[0]].x, @nodes[indices[0]].y)
+        nvgLineTo(vg, @nodes[indices[1]].x, @nodes[indices[1]].y)
+        nvgLineTo(vg, @nodes[indices[2]].x, @nodes[indices[2]].y)
+        nvgClosePath(vg)
+        color = nvgRGBA(0,255,0, 64)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+        color = nvgRGBA(255,128,0, 255)
+        nvgStrokeColor(vg, color)
+        nvgStrokeWidth(vg, lw)
+        nvgStroke(vg)
+      end
+    end
+
+    if @triangles != nil && @triangles.length > 0
+      lw = @node_radius * 0.1
+      @triangles.each do |tri|
+        # circumcircle
+        color = nvgRGBA(255,0,0, 64)
+        nvgBeginPath(vg)
+        nvgCircle(vg, tri.cc.x, tri.cc.y, tri.cr)
+        nvgStrokeColor(vg, color)
+        nvgStrokeWidth(vg, lw)
+        nvgStroke(vg)
+        # circumcenter
+        color = nvgRGBA(0,0,255, 255)
+        nvgBeginPath(vg)
+        nvgCircle(vg, tri.cc.x, tri.cc.y, 4.0)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+      end
+    end
+
+    # Edges
+    if render_edge and @nodes.length >= 2
+      color = nvgRGBA(255,128,0, 255)
+      lw = @node_radius * 0.5
+      nvgLineCap(vg, NVG_ROUND)
+      nvgLineJoin(vg, NVG_ROUND)
+      nvgBeginPath(vg)
+      @nodes.length.times do |i|
+        if i == 0
+          nvgMoveTo(vg, @nodes[0].x, @nodes[0].y)
+        else
+          nvgLineTo(vg, @nodes[i].x, @nodes[i].y)
+        end
+      end
+      nvgClosePath(vg)
+      nvgStrokeColor(vg, color)
+      nvgStrokeWidth(vg, lw)
+      nvgStroke(vg)
+    end
+
+    # Convex Hull
+    if @hull_indices.length > 0
+      lw = @node_radius * 0.75
+      nvgLineCap(vg, NVG_ROUND)
+      nvgLineJoin(vg, NVG_ROUND)
+      nvgBeginPath(vg)
+      @hull_indices.each_with_index do |hull_index, i|
+        if i == 0
+          nvgMoveTo(vg, @nodes[hull_index].x, @nodes[hull_index].y)
+        else
+          nvgLineTo(vg, @nodes[hull_index].x, @nodes[hull_index].y)
+        end
+      end
+      nvgClosePath(vg)
+      color = nvgRGBA(64,32,192, 255)
+      nvgStrokeColor(vg, color)
+      nvgStrokeWidth(vg, lw)
+      nvgStroke(vg)
+
+      @hull_indices.each do |hull_index|
+        nvgBeginPath(vg)
+        sc = 1.5
+        sc2 = sc * 2
+        wh = @node_radius * sc2
+        nvgRoundedRect(vg, @nodes[hull_index].x - @node_radius * sc, @nodes[hull_index].y - @node_radius * sc, wh, wh, @node_radius * 0.75)
+        nvgFillColor(vg, color)
+        nvgFill(vg)
+      end
+    end
+
+    # Voronoi Diagram
+    if @voronoi_cells.length > 0
+      @voronoi_cells.each_with_index do |vc, vc_index|
+
+        lw = @node_radius * 0.25
+        nvgLineCap(vg, NVG_ROUND)
+        nvgLineJoin(vg, NVG_ROUND)
+        if vc.bounded
+
+          nvgBeginPath(vg)
+          vc.vertex_indices.each_with_index do |vertex_index, i|
+            if i == 0
+              nvgMoveTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+            else
+              nvgLineTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+            end
+          end
+          nvgClosePath(vg)
+          color = nvgRGBA(255,255,255, 128)
+          nvgStrokeColor(vg, color)
+          nvgStrokeWidth(vg, lw)
+          nvgStroke(vg)
+
+        else # vc.bounded == false
+
+          if vc.vertex_indices.length > 0
+            nvgBeginPath(vg)
+            vc.vertex_indices.each_with_index do |vertex_index, i|
+              if i == 0
+                nvgMoveTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+              else
+                nvgLineTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+              end
+            end
+            color = nvgRGBA(255,255,255, 128)
+            nvgStrokeColor(vg, color)
+            nvgStrokeWidth(vg, lw)
+            nvgStroke(vg)
+          end
+
+          vc.ray_origin_indices.each_with_index do |vertex_index, i|
+            nvgBeginPath(vg)
+            ray_x = @voronoi_vertices[vertex_index].x + 10000.0 * vc.ray_directions[i].x
+            ray_y = @voronoi_vertices[vertex_index].y + 10000.0 * vc.ray_directions[i].y
+            nvgMoveTo(vg, @voronoi_vertices[vertex_index].x, @voronoi_vertices[vertex_index].y)
+            nvgLineTo(vg, ray_x, ray_y)
+            nvgClosePath(vg)
+            color = nvgRGBA(255,0,255, 128)
+            nvgStrokeColor(vg, color)
+            nvgStrokeWidth(vg, lw)
+            nvgStroke(vg)
+          end
+
+        end
+      end
+    end
+
+    # Nodes
+    if render_node and @nodes.length > 0
+      color = nvgRGBA(0,192,255, 255)
+      nvgBeginPath(vg)
+      @nodes.each do |node|
+        nvgCircle(vg, node.x, node.y, @node_radius)
+        nvgFillColor(vg, color)
+      end
+      nvgFill(vg)
+    end
+
+    # Smallest Enclosing Circle
+=begin
+    if @miniball_radius > 0
+      color = nvgRGBA(255,0,0, 64)
+      nvgBeginPath(vg)
+      nvgCircle(vg, @miniball_center_x, @miniball_center_y, @miniball_radius)
+      nvgFillColor(vg, color)
+      nvgFill(vg)
+    end
+=end
+
+  end
+end
+
+$graph = Graph.new
+
+
+key = GLFW::create_callback(:GLFWkeyfun) do |window, key, scancode, action, mods|
+  if key == GLFW_KEY_ESCAPE && action == GLFW_PRESS # Press ESC to exit.
+    glfwSetWindowShouldClose(window, GL_TRUE)
+  elsif key == GLFW_KEY_R && action == GLFW_PRESS # Press 'R' to clear graph.
+    $graph.clear
+  end
+end
+
+$spiral_theta = 0.0
+$spiral_radius = Float::EPSILON
+
+mouse = GLFW::create_callback(:GLFWmousebuttonfun) do |window_handle, button, action, mods|
+  if $plot_spiral
+    sx = $spiral_radius * Math.cos($spiral_theta)
+    sy = $spiral_radius * Math.sin($spiral_theta)
+    sx += 1280 * 0.5
+    sy += 720 * 0.5
+    $graph.add_node(sx, sy) # insert_node(sx, sy)
+    $graph.triangulate
+    $graph.convex_hull
+    $graph.voronoi_diagram
+    $spiral_theta += 22.0 * Math::PI/180 # Math::PI * (3 - Math.sqrt(5)) # golden angle in radian
+    $spiral_radius += 4.0
+    return
+  end
+
+  if $plot_random
+    sx = rand(1280.0)
+    sy = rand(720.0)
+    $graph.add_node(sx, sy) # insert_node(sx, sy)
+    $graph.triangulate
+    $graph.convex_hull
+    $graph.voronoi_diagram
+    return
+  end
+
+  if button == GLFW_MOUSE_BUTTON_LEFT && action == 0
+    mx_buf = ' ' * 8
+    my_buf = ' ' * 8
+    glfwGetCursorPos(window_handle, mx_buf, my_buf)
+    mx = mx_buf.unpack('D')[0]
+    my = my_buf.unpack('D')[0]
+    if (mods & GLFW_MOD_SHIFT) != 0
+      $graph.remove_nearest_node(mx, my)
+      if $graph.nodes.length <= 2
+        $graph.clear
+      else
+        $graph.triangulate
+        $graph.smallest_enclosing_circle
+        $graph.convex_hull
+        $graph.voronoi_diagram
+      end
+    else
+      $graph.add_node(mx, my) # insert_node(mx, my)
+      $graph.triangulate
+      $graph.smallest_enclosing_circle
+      $graph.convex_hull
+      $graph.voronoi_diagram
+    end
+  end
+end
+
+
+if __FILE__ == $0
+
+  $plot_spiral = ARGV[0] == "-plot_spiral"
+  $plot_random = ARGV[0] == "-plot_random"
+
+  if glfwInit() == GL_FALSE
+    puts("Failed to init GLFW.")
+    exit
+  end
+
+  # glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2)
+  # glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0)
+    glfwDefaultWindowHints()
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE)
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE)
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4)
+    glfwWindowHint(GLFW_DECORATED, 0)
+
+  window = glfwCreateWindow( 1280, 720, "Voronoi", nil, nil )
+  if window == 0
+    glfwTerminate()
+    exit
+  end
+
+  glfwSetKeyCallback( window, key )
+  glfwSetMouseButtonCallback( window, mouse )
+
+  glfwMakeContextCurrent( window )
+
+  nvgSetupGL3()
+  vg = nvgCreateGL3(NVG_ANTIALIAS | NVG_STENCIL_STROKES)
+  if vg == nil
+    puts("Could not init nanovg.")
+    exit
+  end
+
+  winWidth_buf  = '        '
+  winHeight_buf = '        '
+  fbWidth_buf  = '        '
+  fbHeight_buf = '        '
+
+  glfwSwapInterval(0)
+  glfwSetTime(0)
+
+  total_time = 0.0
+
+  prevt = glfwGetTime()
+
+  while glfwWindowShouldClose( window ) == 0
+    t = glfwGetTime()
+    dt = t - prevt # 1.0 / 60.0
+    prevt = t
+    total_time += dt
+
+    glfwGetWindowSize(window, winWidth_buf, winHeight_buf)
+    glfwGetFramebufferSize(window, fbWidth_buf, fbHeight_buf)
+    winWidth = winWidth_buf.unpack('L')[0]
+    winHeight = winHeight_buf.unpack('L')[0]
+    fbWidth = fbWidth_buf.unpack('L')[0]
+    fbHeight = fbHeight_buf.unpack('L')[0]
+
+    pxRatio = fbWidth.to_f / winWidth.to_f
+
+    glViewport(0, 0, fbWidth, fbHeight)
+    glClearColor(0.8, 0.8, 0.8, 1.0)
+    glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)
+
+    nvgBeginFrame(vg, winWidth, winHeight, pxRatio)
+    nvgSave(vg)
+
+    $graph.render(vg)
+
+    nvgRestore(vg)
+    nvgEndFrame(vg)
+
+    glfwSwapBuffers( window )
+    glfwPollEvents()
+
+  end
+
+  nvgDeleteGL3(vg)
+
+  glfwTerminate()
+end
