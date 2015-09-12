@@ -26,34 +26,21 @@ module ConvexPartitioning
     iter = 0
     i = 0
     while n > 3
-=begin
-      if iter == 0
-        puts "rest:"
-        tmp = i
-        n.times do |j|
-          p v[tmp]
-          tmp = indices_next[tmp]
-        end
-      end
-=end
       is_ear = true
       if Triangle.ccw(v[indices_prev[i]], v[i], v[indices_next[i]]) < 0
         k = indices_next[indices_next[i]]
         begin
           if Triangle.contains(v[k],  v[indices_prev[i]], v[i], v[indices_next[i]])
-            # puts "contains=#{v[k]} : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
             is_ear = false
             break
           end
           k = indices_next[k]
         end while k != indices_prev[i]
       else
-        # puts "ccw >= 0 : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
         is_ear = false
       end
 
       if is_ear
-        # puts "ear found : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
         iter = 0
         indices << [indices_prev[i], i, indices_next[i]]
         indices_next[indices_prev[i]] = indices_next[i]
@@ -64,7 +51,6 @@ module ConvexPartitioning
         iter += 1
         i = indices_next[i]
       end
-      # p n
       break if iter == n
     end # while n > 3
     if iter == n
@@ -80,10 +66,101 @@ module ConvexPartitioning
     return indices
   end
 
-  def self.triangulate0(polygon_points, polygon_indices)
+  def self.convex?(polygon_points)
+    polygon_points.length.times do |i|
+      if Triangle.ccw(polygon_points[(i - 1) % polygon_points.length], polygon_points[i], polygon_points[(i + 1) % polygon_points.length]) > 0
+        return false
+      end
+    end
+    return true
+  end
+
+  class PolygonForMerge
+
+    attr_accessor :convex_index, :adjacents
+
+    def initialize(tri_index)
+      @convex_index = tri_index.clone
+      @adjacents = []
+    end
+
+    def build_edge
+      edges = []
+      @convex_index.length.times do |i|
+        edges << [@convex_index[i], @convex_index[(i + 1) % @convex_index.length]]
+      end
+      return edges
+    end
+
+    def has_edge?(edge) # edge = [i, j]
+      edges = build_edge()
+      edges.each do |e|
+        return true if e.sort == edge.sort
+      end
+      return false
+    end
+
+    def shared_edge(other)
+      edges_self = build_edge()
+      edges_other = other.build_edge()
+
+      edges_self.each do |e_self|
+        edges_other.each do |e_other|
+          if e_self.sort == e_other.sort
+            return e_self
+          end
+        end
+      end
+
+      return nil
+    end
+
+    def merge(other)
+      # merge other's polygon
+      edge_shared = self.shared_edge(other)
+      return false if edge_shared == nil # puts "NOT FOUND"
+
+      insert_at   =  self.convex_index.find_index(edge_shared[0]) + 1
+      merge_start = other.convex_index.find_index(edge_shared[0]) + 1
+      # p edge_shared, merge_start, other.convex_index[merge_start]
+      spliced = []
+      (other.convex_index.length - 2).times do |i|
+        spliced << other.convex_index[(merge_start + i) % other.convex_index.length]
+      end
+      spliced.reverse!
+
+      spliced.each do |i|
+        self.convex_index.insert(insert_at, i)
+      end
+
+      # take over other's adjacency information
+      other.adjacents.each do |cp|
+        self.adjacents << cp if cp != self
+      end
+
+      return true
+    end
+
+    def convex?(polygon_points)
+      convex_points = []
+      convex_index.each do |i|
+        convex_points << polygon_points[i]
+      end
+#pp convex_index, convex_points
+      return ConvexPartitioning.convex?(convex_points)
+    end
+
+  end
+
+
+  # Hertel-Mehlhorn Algorithm
+  def self.decompose0(polygon_points)
+    #
+    # Pass 1 : Triangulation by ear-cutting
+    #
     triangles = []
-    indices = []
-    n = polygon_indices.length
+    tri_indices = []
+    n = polygon_points.length
     v = polygon_points
 
     indices_prev = []
@@ -95,13 +172,16 @@ module ConvexPartitioning
     indices_prev[0] = n - 1
     indices_next[n - 1] = 0
 
+    diagonals = [] # Array of pair value that forms diagonal edge; [[i, j], ...]
+    inessential = [] # true if corresponding diagonal is inessential [true, true, false, ...]
+    iter = 0
     i = 0
     while n > 3
       is_ear = true
-      if Triangle.ccw(v[polygon_indices[indices_prev[i]]], v[polygon_indices[i]], v[polygon_indices[indices_next[i]]]) < 0
+      if Triangle.ccw(v[indices_prev[i]], v[i], v[indices_next[i]]) < 0
         k = indices_next[indices_next[i]]
         begin
-          if Triangle.contains(v[polygon_indices[k]],  v[polygon_indices[indices_prev[i]]], v[polygon_indices[i]], v[polygon_indices[indices_next[i]]])
+          if Triangle.contains(v[k],  v[indices_prev[i]], v[i], v[indices_next[i]])
             is_ear = false
             break
           end
@@ -112,19 +192,204 @@ module ConvexPartitioning
       end
 
       if is_ear
-        indices << [indices_prev[i], i, indices_next[i]]
+        iter = 0
+        tri_indices << [indices_prev[i], i, indices_next[i]]
+        diagonals << [indices_prev[i], indices_next[i]]
+        vp = v[indices_prev[indices_prev[i]]]
+        vn = v[indices_next[indices_prev[i]]]
+        c0 = Triangle.ccw(vp, v[indices_prev[i]], vn) < 0
+#        puts "#{vp}, #{v[i]}, #{vn}"
+        vp = v[indices_prev[indices_next[i]]]
+        vn = v[indices_next[indices_next[i]]]
+        c1 = Triangle.ccw(vp, v[indices_next[i]], vn) < 0
+#        puts "#{vp}, #{v[i]}, #{vn}"
+#        puts "#{c0}, #{c1}"
+        inessential << (c0 && c1)
         indices_next[indices_prev[i]] = indices_next[i]
         indices_prev[indices_next[i]] = indices_prev[i]
         n -= 1
         i = indices_prev[i]
       else
+        iter += 1
         i = indices_next[i]
       end
+      break if iter == n
     end # while n > 3
+    if iter == n
+      # p "Failed."
+      return nil
+    else
+      # puts "ear found : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
+      # p "Done."
+    end
 
-    indices << [indices_prev[i], i, indices_next[i]]
+    tri_indices << [indices_prev[i], i, indices_next[i]]
 
-    return indices
+#    pp inessential
+
+    #
+    # Pass 2 : Merge triangles into convex polygon
+    #
+
+    # cnvx_indices = []
+
+    convex_polygons = []
+    tri_indices.each do |tri_index|
+      convex_polygons << PolygonForMerge.new(tri_index)
+    end
+
+    diagonals.each_with_index do |diag, i|
+      if inessential[i] # if diagonals[i] is inessential (removable from polygon)
+        # then link triangles that share removable diagonal
+        # puts "diag:#{diag} (#{inessential[i] ? 'inessential' : 'essential'})"
+        tris = convex_polygons.select {|cp| cp.has_edge?(diag)} # triangles to be merged (# == 2)
+        tris[0].adjacents << tris[1]
+        tris[1].adjacents << tris[0]
+      end
+    end
+
+    merge_done = false
+    begin
+      # merge one by one
+      cp_alive = nil
+      cp_delete = nil
+      convex_polygons.each do |cp0|
+        if not cp0.adjacents.empty?
+          cp1 = cp0.adjacents.pop
+          # merge cp1's polygon into cp0
+          cp0.merge(cp1)
+          cp_alive = cp0
+          cp_delete = cp1
+          break
+        end
+      end
+      convex_polygons.delete(cp_delete)
+
+      # update adjacency
+      convex_polygons.each do |cp|
+        n = cp.adjacents.length
+        n.times do |i|
+          if cp.adjacents[i] == cp_delete
+            cp.adjacents[i] = cp_alive
+          end
+        end
+      end
+
+      # check end status
+      merge_done = true
+      convex_polygons.each do |cp|
+        if not cp.adjacents.empty?
+          merge_done = false
+          break
+        end
+      end
+
+    end until merge_done
+
+#    return tri_indices
+
+    convex_indices = []
+    convex_polygons.each do |cp|
+      convex_indices << cp.convex_index
+    end
+
+    return convex_indices
+  end
+
+  # Hertel-Mehlhorn Algorithm
+  # Ref.: Christer Ericson, Real-Time Collision Detection
+  def self.decompose(polygon_points)
+    #
+    # Pass 1 : Triangulation by ear-cutting
+    #
+    triangles = []
+    tri_indices = []
+    n = polygon_points.length
+    v = polygon_points
+
+    indices_prev = []
+    indices_next = []
+    n.times do |i|
+      indices_prev << i - 1
+      indices_next << i + 1
+    end
+    indices_prev[0] = n - 1
+    indices_next[n - 1] = 0
+
+    temp_polygon = nil
+    temp_polygon_new = nil
+    convex_indices = []
+    iter = 0
+    i = 0
+    while n >= 3
+      is_ear = true
+      if Triangle.ccw(v[indices_prev[i]], v[i], v[indices_next[i]]) < 0
+        k = indices_next[indices_next[i]]
+        begin
+          if Triangle.contains(v[k],  v[indices_prev[i]], v[i], v[indices_next[i]])
+            is_ear = false
+            break
+          end
+          k = indices_next[k]
+        end while k != indices_prev[i]
+      else
+        is_ear = false
+      end
+
+      if is_ear
+        iter = 0
+        tri_indices << [indices_prev[i], i, indices_next[i]]
+
+        temp_polygon_new = PolygonForMerge.new([indices_prev[i], i, indices_next[i]])
+        merge_success = true
+        if temp_polygon != nil
+          merge_success = temp_polygon_new.merge(temp_polygon)
+          if not merge_success
+            puts "Merge failed"
+            convex_indices << temp_polygon.convex_index
+            temp_polygon = temp_polygon_new
+          end
+        end
+
+        removable = temp_polygon_new.convex?(v)
+        if merge_success
+          if removable
+            temp_polygon = temp_polygon_new
+          else
+            convex_indices << temp_polygon.convex_index
+            temp_polygon = PolygonForMerge.new([indices_prev[i], i, indices_next[i]])
+          end
+        end
+
+        indices_next[indices_prev[i]] = indices_next[i]
+        indices_prev[indices_next[i]] = indices_prev[i]
+        n -= 1
+        i = indices_prev[i]
+      else
+        iter += 1
+        i = indices_next[i]
+      end
+      break if iter == n
+    end # while n > 3
+    if iter == n
+      # p "Failed."
+      return nil
+    else
+      # puts "ear found : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
+      # p "Done."
+    end
+
+    tri_indices << [indices_prev[i], i, indices_next[i]]
+
+    convex_last = []
+    if temp_polygon != nil
+      temp_polygon.convex_index.each do |i|
+        convex_last << i
+      end
+      convex_indices << convex_last
+    end
+
+    return convex_indices
   end
 
   # Ref.: https://rootllama.wordpress.com/2014/06/20/ray-line-segment-intersection-test-in-2d/
