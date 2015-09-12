@@ -299,9 +299,7 @@ module ConvexPartitioning
   # Hertel-Mehlhorn Algorithm
   # Ref.: Christer Ericson, Real-Time Collision Detection
   def self.decompose(polygon_points)
-    #
-    # Pass 1 : Triangulation by ear-cutting
-    #
+    # This algorithm is based on triangulation by ear-cutting
     triangles = []
     tri_indices = []
     n = polygon_points.length
@@ -345,17 +343,15 @@ module ConvexPartitioning
         if temp_polygon != nil
           merge_success = temp_polygon_new.merge(temp_polygon)
           if not merge_success
-            puts "Merge failed"
             convex_indices << temp_polygon.convex_index
             temp_polygon = temp_polygon_new
           end
         end
 
-        removable = temp_polygon_new.convex?(v)
         if merge_success
-          if removable
+          if temp_polygon_new.convex?(v) # If the ear triangle has a removable diagonal
             temp_polygon = temp_polygon_new
-          else
+          else # Merging the ear makes temp_polygon concave, then output current polygon and restart merger
             convex_indices << temp_polygon.convex_index
             temp_polygon = PolygonForMerge.new([indices_prev[i], i, indices_next[i]])
           end
@@ -370,14 +366,9 @@ module ConvexPartitioning
         i = indices_next[i]
       end
       break if iter == n
-    end # while n > 3
-    if iter == n
-      # p "Failed."
-      return nil
-    else
-      # puts "ear found : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
-      # p "Done."
-    end
+    end # while n >= 3
+
+    return nil if iter == n # p "Failed."
 
     tri_indices << [indices_prev[i], i, indices_next[i]]
 
