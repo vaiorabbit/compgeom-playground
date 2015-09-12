@@ -232,7 +232,7 @@ class Graph
       if $outer_graph.nodes.length <= 2
         $outer_graph.clear
       else
-        $outer_graph.decompose
+        $outer_graph.decompose($convex_decomposition_mode)
       end
     end
   end
@@ -282,9 +282,9 @@ class Graph
     end
   end
 
-  def decompose
+  def decompose(convex_mode = true)
     return false if @nodes.length < 3
-    indices = ConvexPartitioning.decompose(@polygon) # ConvexPartitioning.decompose(@polygon)
+    indices = convex_mode ? ConvexPartitioning.decompose(@polygon) : ConvexPartitioning.triangulate(@polygon)
     @polygon_indices = indices == nil ? [] : indices
   end
 
@@ -295,7 +295,7 @@ class Graph
   end
 
   def render(vg, render_edge: true, render_node: true, color_scheme: :outer)
-    # Triangles
+    # Polygons
     if @polygon_indices.length > 0
       color = nvgRGBA(0,255,0, 255)
       lw = @node_radius * 0.5
@@ -314,7 +314,7 @@ class Graph
         color = nvgRGBA(0,255,0, 64)
         nvgFillColor(vg, color)
         nvgFill(vg)
-        color = nvgRGBA(255,128,0, 255)
+        color = $convex_decomposition_mode ? nvgRGBA(255,255,0, 255) : nvgRGBA(255,128,0, 255)
         nvgStrokeColor(vg, color)
         nvgStrokeWidth(vg, lw)
         nvgStroke(vg)
@@ -357,6 +357,7 @@ end
 
 $font_plane = FontPlane.new
 
+$convex_docomposition_mode = true
 $outer_graph = Graph.new
 $inner_graph = Graph.new
 $current_graph = $outer_graph
@@ -366,13 +367,16 @@ key = GLFW::create_callback(:GLFWkeyfun) do |window, key, scancode, action, mods
     glfwSetWindowShouldClose(window, GL_TRUE)
   elsif key == GLFW_KEY_SPACE && action == GLFW_PRESS
     $current_graph = $current_graph == $inner_graph ? $outer_graph : $inner_graph
+  elsif key == GLFW_KEY_D && action == GLFW_PRESS # Press 'D' to switch convex decomposition mode.
+    $convex_decomposition_mode = !$convex_decomposition_mode
+    $outer_graph.decompose($convex_decomposition_mode)
   elsif key == GLFW_KEY_R && action == GLFW_PRESS # Press 'R' to clear graph.
     $current_graph.clear
   elsif key == GLFW_KEY_M && action == GLFW_PRESS # Press 'M' to merge inner polygon.
     if $outer_graph.polygon.length >= 3 && $inner_graph.polygon.length >= 3
       $outer_graph.polygon, appended_nodes = ConvexPartitioning.merge_inner_polygon($outer_graph.polygon, $inner_graph.polygon)
       $outer_graph.nodes.concat(appended_nodes)
-      $outer_graph.decompose
+      $outer_graph.decompose($convex_decomposition_mode)
     end
   elsif key == GLFW_KEY_Z && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL != 0) # Remove the last node your added by Ctrl-Z.
     $current_graph.undo_insert
@@ -391,11 +395,11 @@ mouse = GLFW::create_callback(:GLFWmousebuttonfun) do |window_handle, button, ac
       if $current_graph.nodes.length <= 2
         $current_graph.clear
       else
-        $current_graph.decompose
+        $current_graph.decompose($convex_decomposition_mode)
       end
     else
       $current_graph.insert_node(mx, my)
-      $current_graph.decompose
+      $current_graph.decompose($convex_decomposition_mode)
     end
   end
 end
@@ -473,8 +477,8 @@ if __FILE__ == $0
     $outer_graph.render(vg, color_scheme: :outer)
     $inner_graph.render(vg, color_scheme: :inner)
 
-    $font_plane.render(vg, winWidth - 1200, 10, 1150, 700, "[Mode] #{$current_graph==$outer_graph ? 'Making Outer Polygon' : 'Making Inner Polygon'}", color: nvgRGBA(32,128,64,255))
-    $font_plane.render(vg, winWidth - 1200, 60, 1150, 700, "[Convex Decomposition] #{$outer_graph.polygon_indices.length > 0 ? 'Done' : 'Not Yet'}", color: nvgRGBA(32,128,64,255))
+    $font_plane.render(vg, winWidth - 1200, 10, 1150, 700, "[Edit Mode] #{$current_graph==$outer_graph ? 'Outer Polygon' : 'Inner Polygon'}", color: nvgRGBA(32,128,64,255))
+    $font_plane.render(vg, winWidth - 1200, 60, 1150, 700, "[Decomposition] #{$convex_decomposition_mode ? 'Convex' : 'Triangle'}", color: nvgRGBA(32,128,64,255))
 
     nvgRestore(vg)
     nvgEndFrame(vg)
