@@ -1,8 +1,8 @@
 # coding: utf-8
-
 require 'rmath3d/rmath3d_plain'
 include RMath3D
 
+require_relative 'common'
 require_relative 'minicircle'
 
 class Triangle
@@ -69,15 +69,7 @@ class Triangle
   # -1 : clockwise / collinear (p2 is in between p0 and p1).
   #  0 : collinear (p1 is in between p0 and p2)
   def self.ccw(p0, p1, p2)
-    dx1 = p1.x - p0.x
-    dy1 = p1.y - p0.y
-    dx2 = p2.x - p0.x
-    dy2 = p2.y - p0.y
-    return +1 if dx1*dy2 > dy1*dx2
-    return -1 if dx1*dy2 < dy1*dx2
-    return -1 if (dx1*dx2 < 0) || (dy1*dy2 < 0)
-    return +1 if dx1**2 + dy1**2 < dx2**2 + dy2**2
-    return 0
+    CompGeom.ccw(p0, p1, p2)
   end
 
   # Christer Ericson, Real-Time Collision Detection, Ch 5.1.5
@@ -132,7 +124,12 @@ class Triangle
     closest_point, barycentric_coodinates = self.closest_point(p, a, b, c)
 
     return (0.0 < barycentric_coodinates[0] && barycentric_coodinates[0] < 1.0) && (0.0 < barycentric_coodinates[1] && barycentric_coodinates[1] < 1.0) && (barycentric_coodinates[0] + barycentric_coodinates[1] < 1.0) ? true : false
-    # return (0.0 <= barycentric_coodinates[0] && barycentric_coodinates[0] <= 1.0) && (0.0 <= barycentric_coodinates[1] && barycentric_coodinates[1] <= 1.0) && (barycentric_coodinates[0] + barycentric_coodinates[1] <= 1.0) ? true : false
+  end
+
+  def self.contains_ext(p, a, b, c)
+    closest_point, barycentric_coodinates = self.closest_point(p, a, b, c)
+
+    return (0.0 <= barycentric_coodinates[0] && barycentric_coodinates[0] <= 1.0) && (0.0 <= barycentric_coodinates[1] && barycentric_coodinates[1] <= 1.0) && (barycentric_coodinates[0] + barycentric_coodinates[1] <= 1.0) ? true : false
   end
 
 end

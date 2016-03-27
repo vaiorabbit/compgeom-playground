@@ -1,7 +1,7 @@
 # CompGeom-Playground #
 
 *   Created : 2015-09-08
-*   Last modified : 2015-09-12
+*   Last modified : 2016-03-27
 
 
 ## Prerequisites ##
@@ -25,7 +25,7 @@
 ### Copyright Notice ###
 
 	CompGeom-Playground
-	Copyright (c) 2015 vaiorabbit
+	Copyright (c) 2015-2016 vaiorabbit
 	
 	This software is provided 'as-is', without any express or implied
 	warranty. In no event will the authors be held liable for any damages
