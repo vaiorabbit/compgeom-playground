@@ -1,6 +1,12 @@
+2017-08-28  vaiorabbit  <http://twitter.com/vaiorabbit>
+
+	* compgeom/clipping.rb, intersection.rb, polygon.rb: Added.
+	* test_clipping.rb: Added
+
 2016-03-27  vaiorabbit
 
 	* compgeom/linear_program.rb: Added.
+	* test_linear_program.rb: Added.
 
 2015-09-12  vaiorabbit
 

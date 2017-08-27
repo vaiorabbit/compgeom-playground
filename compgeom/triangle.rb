@@ -8,7 +8,7 @@ require_relative 'minicircle'
 class Triangle
 
   attr_accessor :vertex, :edge
-  attr_reader :cr, :cc
+  attr_reader :cr, :cc # radius/center of circumcircle
 
   def initialize(vtx)
     @vertex = vtx

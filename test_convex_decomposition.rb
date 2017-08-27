@@ -8,7 +8,7 @@ require 'glfw'
 require 'rmath3d/rmath3d_plain'
 require_relative 'nanovg'
 require_relative 'compgeom/convex_partitioning'
-require_relative 'compgeom/segment_intersection'
+require_relative 'compgeom/intersection'
 
 
 OpenGL.load_lib()

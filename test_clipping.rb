@@ -9,6 +9,7 @@ require 'rmath3d/rmath3d_plain'
 require_relative 'nanovg'
 require_relative 'compgeom/convex_partitioning'
 require_relative 'compgeom/intersection'
+require_relative 'compgeom/clipping'
 
 
 OpenGL.load_lib()
@@ -108,7 +109,7 @@ end
 class Graph
   attr_accessor :nodes, :triangle_indices, :polygon
 
-  def initialize
+  def initialize(edge_color = nil, node_color = nil)
     @nodes = []
     @polygon = []
 
@@ -117,6 +118,9 @@ class Graph
 
     @triangle_indices = []
     @hull_indices = []
+
+    @edge_color = edge_color != nil ? edge_color : nvgRGBA(255, 255, 255, 255)
+    @node_color = node_color != nil ? node_color : nvgRGBA(255, 255, 255, 255)
   end
 
   def add_node(x, y)
@@ -155,7 +159,7 @@ class Graph
     # Calculate distance from point to all edges.
     distances = Array.new(@polygon.length) { -Float::MAX }
     edges.each_with_index do |edge, i|
-      distances[i] = SegmentIntersection.distance_from_point(point, @polygon[edge[0]], @polygon[edge[1]])
+      distances[i] = Distance.point_segment(point, @polygon[edge[0]], @polygon[edge[1]])
     end
 
     # Find nearest edge and insert new Node as a dividing point.
@@ -249,17 +253,16 @@ class Graph
 
     @nodes << RVec2.new(point_x, point_y)
     @polygon.insert( insertion_index + 1, @nodes.last )
-#    @undo_insert_index = insertion_index + 1
   end
 
   def undo_insert
     if @undo_insert_index >= 0
       @nodes.delete_at(@undo_insert_index)
       @undo_insert_index = -1
-      if $outer_graph.nodes.length <= 2
-        $outer_graph.clear
+      if $subj_graph.nodes.length <= 2
+        $subj_graph.clear
       else
-        $outer_graph.triangulate
+        $subj_graph.triangulate
       end
     end
   end
@@ -283,7 +286,6 @@ class Graph
         new_edge_index << i
         next
       end
-      # p new_edge_index.length
       segment_indices << [i, (i + 1) % @polygon.length]
     end
 
@@ -321,10 +323,9 @@ class Graph
     @triangle_indices.clear if @triangle_indices != nil
   end
 
-  def render(vg, render_edge: true, render_node: true, color_scheme: :outer)
+  def render(vg, render_edge: true, render_node: true)
     # Triangles
     if @triangle_indices.length > 0
-      color = nvgRGBA(0,255,0, 255)
       lw = @node_radius * 0.5
       @triangle_indices.each do |indices|
         nvgLineCap(vg, NVG_ROUND)
@@ -337,16 +338,16 @@ class Graph
         color = nvgRGBA(0,255,0, 64)
         nvgFillColor(vg, color)
         nvgFill(vg)
-        color = nvgRGBA(255,128,0, 255)
-        nvgStrokeColor(vg, color)
-        nvgStrokeWidth(vg, lw)
-        nvgStroke(vg)
+        # Edge of each triangles.
+        # color = nvgRGBA(255,128,0, 255)
+        # nvgStrokeColor(vg, color)
+        # nvgStrokeWidth(vg, lw)
+        # nvgStroke(vg)
       end
     end
 
     # Edges
     if render_edge and @nodes.length >= 2
-      color = color_scheme == :outer ? nvgRGBA(0,0,255, 255) : nvgRGBA(255,0,0, 255)
       lw = @node_radius * 0.5
       nvgLineCap(vg, NVG_ROUND)
       nvgLineJoin(vg, NVG_ROUND)
@@ -359,18 +360,17 @@ class Graph
         end
       end
       nvgClosePath(vg)
-      nvgStrokeColor(vg, color)
+      nvgStrokeColor(vg, @edge_color)
       nvgStrokeWidth(vg, lw)
       nvgStroke(vg)
     end
 
     # Nodes
     if render_node and @nodes.length > 0
-      color = color_scheme == :outer ? nvgRGBA(0,192,255, 255) : nvgRGBA(255,192,0, 255)
       nvgBeginPath(vg)
       @nodes.each do |node|
         nvgCircle(vg, node.x, node.y, @node_radius)
-        nvgFillColor(vg, color)
+        nvgFillColor(vg, @node_color)
       end
       nvgFill(vg)
     end
@@ -380,22 +380,37 @@ end
 
 $font_plane = FontPlane.new
 
-$outer_graph = Graph.new
-$inner_graph = Graph.new
-$current_graph = $outer_graph
+$subj_graph = Graph.new(nvgRGBA(0,0,255, 255), nvgRGBA(0,192,255, 255))
+$clip_graph = Graph.new(nvgRGBA(255,0,0, 255), nvgRGBA(255,0,192, 255))
+$current_graph = $subj_graph
+
+$new_graphs = []
 
 key = GLFW::create_callback(:GLFWkeyfun) do |window, key, scancode, action, mods|
   if key == GLFW_KEY_ESCAPE && action == GLFW_PRESS # Press ESC to exit.
     glfwSetWindowShouldClose(window, GL_TRUE)
   elsif key == GLFW_KEY_SPACE && action == GLFW_PRESS
-    $current_graph = $current_graph == $inner_graph ? $outer_graph : $inner_graph
+    $current_graph = $current_graph == $clip_graph ? $subj_graph : $clip_graph
   elsif key == GLFW_KEY_R && action == GLFW_PRESS # Press 'R' to clear graph.
     $current_graph.clear
-  elsif key == GLFW_KEY_M && action == GLFW_PRESS # Press 'M' to merge inner polygon.
-    if $outer_graph.polygon.length >= 3 && $inner_graph.polygon.length >= 3
-      $outer_graph.polygon, appended_nodes = ConvexPartitioning.merge_inner_polygon($outer_graph.polygon, $inner_graph.polygon)
-      $outer_graph.nodes.concat(appended_nodes)
-      $outer_graph.triangulate
+  elsif key == GLFW_KEY_M && action == GLFW_PRESS # Press 'M' to change clipping mode.
+    # if $subj_graph.polygon.length >= 3 && $clip_graph.polygon.length >= 3
+    #   $subj_graph.polygon, appended_nodes = ConvexPartitioning.merge_inner_polygon($subj_graph.polygon, $clip_graph.polygon)
+    #   $subj_graph.nodes.concat(appended_nodes)
+    #   $subj_graph.triangulate
+    # end
+  elsif key == GLFW_KEY_C && action == GLFW_PRESS # Press 'C' to execute clipping.
+    polygons = Clipping.clip($subj_graph.polygon, $clip_graph.polygon)
+    unless polygons.empty?
+      $new_graphs.clear
+      polygons.each do |polygon|
+        g = Graph.new(nvgRGBA(255,255,0, 255), nvgRGBA(0,255,0, 255))
+        polygon.each do |pos|
+          g.add_node(pos.x, pos.y)
+        end
+        g.triangulate
+        $new_graphs << g
+      end
     end
   elsif key == GLFW_KEY_Z && action == GLFW_PRESS && (mods & GLFW_MOD_CONTROL != 0) # Remove the last node your added by Ctrl-Z.
     $current_graph.undo_insert
@@ -457,10 +472,10 @@ if __FILE__ == $0
     exit
   end
 
-  winWidth_buf  = '        '
-  winHeight_buf = '        '
-  fbWidth_buf  = '        '
-  fbHeight_buf = '        '
+  winWidth_buf  = ' ' * 8
+  winHeight_buf = ' ' * 8
+  fbWidth_buf  = ' ' * 8
+  fbHeight_buf = ' ' * 8
 
   $font_plane.load(vg, "sans", "data/GenShinGothic-Normal.ttf")
 
@@ -470,6 +485,155 @@ if __FILE__ == $0
   total_time = 0.0
 
   prevt = glfwGetTime()
+
+  # Ref.: http://www.explore-hokkaido.com/assets/svg/hokkaido-map.svg
+  hokkaido = [
+    RVec2.new(31.66,226.29),
+    RVec2.new(31.56,215.25),
+    RVec2.new(28.15,207.94),
+    RVec2.new(23.25,206.53),
+    RVec2.new(21.67,201.39),
+    RVec2.new(17.76,200.06),
+    RVec2.new(16.18,194.91),
+    RVec2.new(20.83,187.27),
+    RVec2.new(19.74,176.14),
+    RVec2.new(21.98,173.32),
+    RVec2.new(31.11,172.06),
+    RVec2.new(37.83,163.59),
+    RVec2.new(40.49,167.82),
+    RVec2.new(42.57,166.99),
+    RVec2.new(47.29,158.35),
+    RVec2.new(53.69,153.86),
+    RVec2.new(44.87,139.08),
+    RVec2.new(46.44,132.19),
+    RVec2.new(53.58,130.77),
+    RVec2.new(65.72,141.81),
+    RVec2.new(76.93,139.72),
+    RVec2.new(76.68,142.71),
+    RVec2.new(83.41,146.28),
+    RVec2.new(88.64,143.7),
+    RVec2.new(95.36,135.22),
+    RVec2.new(91.43,109.81),
+    RVec2.new(94.83,105.08),
+    RVec2.new(102.06,102.66),
+    RVec2.new(106.54,97.01),
+    RVec2.new(107.43,74.01),
+    RVec2.new(112.08,66.36),
+    RVec2.new(113.89,56.48),
+    RVec2.new(112.38,38.29),
+    RVec2.new(105.97,18.7),
+    RVec2.new(109.7,9.98),
+    RVec2.new(109.2,3.91),
+    RVec2.new(110.95,7.07),
+    RVec2.new(116.01,6.48),
+    RVec2.new(122.57,0),
+    RVec2.new(146.26,29.05),
+    RVec2.new(153.16,42.66),
+    RVec2.new(167.71,60.92),
+    RVec2.new(195.05,82.24),
+    RVec2.new(223.54,89.61),
+    RVec2.new(224.21,93.67),
+    RVec2.new(228.78,99.07),
+    RVec2.new(247.72,100.63),
+    RVec2.new(271.86,75.53),
+    RVec2.new(273.44,80.68),
+    RVec2.new(261.59,102.78),
+    RVec2.new(260.77,112.74),
+    RVec2.new(263.26,118.97),
+    RVec2.new(272.98,122.78),
+    RVec2.new(270.82,124.61),
+    RVec2.new(272.07,121.7),
+    RVec2.new(266.09,121.21),
+    RVec2.new(270.08,133.58),
+    RVec2.new(275.49,141.05),
+    RVec2.new(279.39,142.38),
+    RVec2.new(287.03,134.98),
+    RVec2.new(294.09,134.56),
+    RVec2.new(283.46,141.71),
+    RVec2.new(280.89,148.52),
+    RVec2.new(263.7,150.11),
+    RVec2.new(261.22,155.93),
+    RVec2.new(256.82,160.58),
+    RVec2.new(251.84,160.17),
+    RVec2.new(250.01,158.01),
+    RVec2.new(251.17,156.1),
+    RVec2.new(248.26,154.86),
+    RVec2.new(244.78,160.59),
+    RVec2.new(247.6,162.83),
+    RVec2.new(232.57,162.59),
+    RVec2.new(224.85,158.95),
+    RVec2.new(209.24,165.69),
+    RVec2.new(193.97,180.48),
+    RVec2.new(183.85,193.69),
+    RVec2.new(180.12,202.42),
+    RVec2.new(179.88,217.45),
+    RVec2.new(177.23,225.26),
+    RVec2.new(164.19,213.14),
+    RVec2.new(142,202.28),
+    RVec2.new(115.5,183.04),
+    RVec2.new(102.7,179.98),
+    RVec2.new(105.94,177.23),
+    RVec2.new(90.33,183.97),
+    RVec2.new(73.07,198.6),
+    RVec2.new(70.33,195.37),
+    RVec2.new(74.31,195.69),
+    RVec2.new(69.41,194.29),
+    RVec2.new(67.91,188.14),
+    RVec2.new(60.6,179.51),
+    RVec2.new(49.55,179.6),
+    RVec2.new(43.99,186.17),
+    RVec2.new(40.18,195.89),
+    RVec2.new(40.85,199.96),
+    RVec2.new(52.15,208.92),
+    RVec2.new(62.12,209.74),
+    RVec2.new(70.1,222.44),
+    RVec2.new(78.83,226.17),
+    RVec2.new(80.57,229.32),
+    RVec2.new(74.18,233.81),
+    RVec2.new(70.03,235.48),
+    RVec2.new(61.39,230.75),
+    RVec2.new(58.23,232.5),
+    RVec2.new(58.56,228.51),
+    RVec2.new(55.66,227.27),
+    RVec2.new(53.25,232.09),
+    RVec2.new(45.95,235.5),
+    RVec2.new(45.21,244.47),
+    RVec2.new(36.91,247.79),
+    RVec2.new(33.5,252.53),
+    RVec2.new(26.77,248.97),
+    RVec2.new(24.28,242.74),
+    RVec2.new(26.02,233.85),
+    RVec2.new(31.66,226.29),
+  ]
+  ofs_x = 1280 / 2 - 360
+  ofs_y = 720 / 2 - 340
+  scl = 2.7
+  hokkaido.each do |pos|
+    $subj_graph.add_node(scl * pos.x + ofs_x, scl * pos.y + ofs_y)
+  end
+  $subj_graph.triangulate
+
+  # Ref.: https://www.bang-guru.com/assets/img_v5/base/ico_score_on.svg
+  star = [
+    RVec2.new(0,15),
+    RVec2.new(4.1,3.5),
+    RVec2.new(15,3.5),
+    RVec2.new(6.1,-3.2),
+    RVec2.new(9.3,-15),
+    RVec2.new(0,-7.9),
+    RVec2.new(-9.3,-15),
+    RVec2.new(-6.1,-3.2),
+    RVec2.new(-15,3.5),
+    RVec2.new(-4.1,3.5),
+  ]
+  ofs_x = 1280 / 2 - 100
+  ofs_y = 720 / 2 + 60
+  scl = 14
+  star.reverse.each do |pos|
+    $clip_graph.add_node(scl * pos.x + ofs_x, -scl * pos.y + ofs_y)
+  end
+  $clip_graph.triangulate
+  
 
   while glfwWindowShouldClose( window ) == 0
     t = glfwGetTime()
@@ -493,11 +657,15 @@ if __FILE__ == $0
     nvgBeginFrame(vg, winWidth, winHeight, pxRatio)
     nvgSave(vg)
 
-    $outer_graph.render(vg, color_scheme: :outer)
-    $inner_graph.render(vg, color_scheme: :inner)
+    $subj_graph.render(vg)
+    $clip_graph.render(vg)
 
-    $font_plane.render(vg, winWidth - 1200, 10, 1150, 700, "[MODE] #{$current_graph==$outer_graph ? 'Making Outer Polygon' : 'Making Inner Polygon'}", color: nvgRGBA(32,128,64,255))
-    $font_plane.render(vg, winWidth - 1200, 60, 1150, 700, "[TRIANGULATION] #{$outer_graph.triangle_indices.length > 0 ? 'Done' : 'Not Yet'}", color: nvgRGBA(32,128,64,255))
+    $new_graphs.each do |graph|
+      graph.render(vg)
+    end
+
+    $font_plane.render(vg, winWidth - 1200, 10, 1150, 700, "[MODE] #{$current_graph==$subj_graph ? 'Making Subject Polygon' : 'Making Clip Polygon'}", color: nvgRGBA(32,128,64,255))
+    $font_plane.render(vg, winWidth - 1200, 60, 1150, 700, "[CLIP] #{$new_graphs.length > 0 ? 'Done' : 'Not Yet'}", color: nvgRGBA(32,128,64,255))
 
     nvgRestore(vg)
     nvgEndFrame(vg)

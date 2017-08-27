@@ -19,6 +19,12 @@ module CompGeom
     return 0
   end
 
+  # src and dst : A directed line through two points
+  # p : Point (RVec2)
+  def self.in_left(src, dst, p)
+    return CompGeom.ccw(src, dst, p) > 0
+  end
+
   # |a b|
   # |c d|
   def self.determinant(a, b, c, d)

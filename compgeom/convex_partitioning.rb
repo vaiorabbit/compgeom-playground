@@ -1,8 +1,8 @@
-require 'pp'
 require 'rmath3d/rmath3d_plain'
 include RMath3D
 
 require_relative 'triangle'
+require_relative 'intersection'
 
 module ConvexPartitioning
 
@@ -146,155 +146,11 @@ module ConvexPartitioning
       convex_index.each do |i|
         convex_points << polygon_points[i]
       end
-#pp convex_index, convex_points
       return ConvexPartitioning.convex?(convex_points)
     end
 
   end
 
-
-  # Hertel-Mehlhorn Algorithm
-  def self.decompose0(polygon_points)
-    #
-    # Pass 1 : Triangulation by ear-cutting
-    #
-    triangles = []
-    tri_indices = []
-    n = polygon_points.length
-    v = polygon_points
-
-    indices_prev = []
-    indices_next = []
-    n.times do |i|
-      indices_prev << i - 1
-      indices_next << i + 1
-    end
-    indices_prev[0] = n - 1
-    indices_next[n - 1] = 0
-
-    diagonals = [] # Array of pair value that forms diagonal edge; [[i, j], ...]
-    inessential = [] # true if corresponding diagonal is inessential [true, true, false, ...]
-    iter = 0
-    i = 0
-    while n > 3
-      is_ear = true
-      if Triangle.ccw(v[indices_prev[i]], v[i], v[indices_next[i]]) < 0
-        k = indices_next[indices_next[i]]
-        begin
-          if Triangle.contains(v[k],  v[indices_prev[i]], v[i], v[indices_next[i]])
-            is_ear = false
-            break
-          end
-          k = indices_next[k]
-        end while k != indices_prev[i]
-      else
-        is_ear = false
-      end
-
-      if is_ear
-        iter = 0
-        tri_indices << [indices_prev[i], i, indices_next[i]]
-        diagonals << [indices_prev[i], indices_next[i]]
-        vp = v[indices_prev[indices_prev[i]]]
-        vn = v[indices_next[indices_prev[i]]]
-        c0 = Triangle.ccw(vp, v[indices_prev[i]], vn) < 0
-#        puts "#{vp}, #{v[i]}, #{vn}"
-        vp = v[indices_prev[indices_next[i]]]
-        vn = v[indices_next[indices_next[i]]]
-        c1 = Triangle.ccw(vp, v[indices_next[i]], vn) < 0
-#        puts "#{vp}, #{v[i]}, #{vn}"
-#        puts "#{c0}, #{c1}"
-        inessential << (c0 && c1)
-        indices_next[indices_prev[i]] = indices_next[i]
-        indices_prev[indices_next[i]] = indices_prev[i]
-        n -= 1
-        i = indices_prev[i]
-      else
-        iter += 1
-        i = indices_next[i]
-      end
-      break if iter == n
-    end # while n > 3
-    if iter == n
-      # p "Failed."
-      return nil
-    else
-      # puts "ear found : #{v[indices_prev[i]]}, #{v[i]}, #{v[indices_next[i]]}"
-      # p "Done."
-    end
-
-    tri_indices << [indices_prev[i], i, indices_next[i]]
-
-#    pp inessential
-
-    #
-    # Pass 2 : Merge triangles into convex polygon
-    #
-
-    # cnvx_indices = []
-
-    convex_polygons = []
-    tri_indices.each do |tri_index|
-      convex_polygons << PolygonForMerge.new(tri_index)
-    end
-
-    diagonals.each_with_index do |diag, i|
-      if inessential[i] # if diagonals[i] is inessential (removable from polygon)
-        # then link triangles that share removable diagonal
-        # puts "diag:#{diag} (#{inessential[i] ? 'inessential' : 'essential'})"
-        tris = convex_polygons.select {|cp| cp.has_edge?(diag)} # triangles to be merged (# == 2)
-        tris[0].adjacents << tris[1]
-        tris[1].adjacents << tris[0]
-      end
-    end
-
-    merge_done = false
-    begin
-      # merge one by one
-      cp_alive = nil
-      cp_delete = nil
-      convex_polygons.each do |cp0|
-        if not cp0.adjacents.empty?
-          cp1 = cp0.adjacents.pop
-          # merge cp1's polygon into cp0
-          cp0.merge(cp1)
-          cp_alive = cp0
-          cp_delete = cp1
-          break
-        end
-      end
-      convex_polygons.delete(cp_delete)
-
-      # update adjacency
-      convex_polygons.each do |cp|
-        n = cp.adjacents.length
-        n.times do |i|
-          if cp.adjacents[i] == cp_delete
-            cp.adjacents[i] = cp_alive
-          end
-        end
-      end
-
-      # check end status
-      merge_done = true
-      convex_polygons.each do |cp|
-        if not cp.adjacents.empty?
-          merge_done = false
-          break
-        end
-      end
-
-    end until merge_done
-
-#    return tri_indices
-
-    convex_indices = []
-    convex_polygons.each do |cp|
-      convex_indices << cp.convex_index
-    end
-
-    return convex_indices
-  end
 
   # Hertel-Mehlhorn Algorithm
   # Ref.: Christer Ericson, Real-Time Collision Detection
@@ -383,22 +239,6 @@ module ConvexPartitioning
     return convex_indices
   end
 
-  # Ref.: https://rootllama.wordpress.com/2014/06/20/ray-line-segment-intersection-test-in-2d/
-  def self.segment_ray_intersect?(a, b, o, d)
-    v1 = o - a
-    v2 = b - a
-    v3 = RVec2.new(-d.y, d.x)
-    t1 = RVec2.cross(v2, v1) / RVec2.dot(v2, v3)
-    t2 = RVec2.dot(v1, v3) / RVec2.dot(v2, v3)
-    #p a, b, o, d
-    #p v1, v2, v3
-    #p t1, t2
-    #p RVec2.cross(v2, v1)
-    intersect = (t1 >= 0 && (0 <= t2 && t2 <= 1)) ? true : false
-    return nil unless intersect
-    return o + t1 * d
-  end
-
   # Ref.: David Eberly, "Triangulation by Ear Clipping"
   # http://www.geometrictools.com/Documentation/TriangulationByEarClipping.pdf
   def self.find_mutually_visible_vertices(outer_polygon, inner_polygon, axis = RVec2.new(1.0, 0.0))
@@ -414,8 +254,8 @@ module ConvexPartitioning
       # next if vertex_current.x < vertex_M.x
       vertex_next = outer_polygon[(index + 1) % outer_polygon.length]
       # next if vertex_next.x < vertex_M.x
-    # vertex_I_new = segment_ray_intersect?(vertex_current, vertex_next, vertex_M, RVec2.new(1.0, 0.0)) # usable if axis == (1, 0)
-      vertex_I_new = segment_ray_intersect?(vertex_current, vertex_next, vertex_M, axis)
+    # vertex_I_new = Intersection.get_ray_segment_intersection(vertex_M, RVec2.new(1.0, 0.0), vertex_current, vertex_next) # usable if axis == (1, 0)
+      vertex_I_new = Intersection.get_ray_segment_intersection(vertex_M, axis, vertex_current, vertex_next)
     # if vertex_I_new != nil && vertex_I_new.x < vertex_I.x # usable if axis == (1, 0)
       if vertex_I_new != nil
         vertex_I_new_dot = RVec2.dot(vertex_I_new, axis)

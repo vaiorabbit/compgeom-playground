@@ -3,6 +3,7 @@ require 'rmath3d/rmath3d_plain'
 include RMath3D
 
 require_relative 'common'
+require_relative 'intersection'
 
 module LinearProgram
 
@@ -76,32 +77,11 @@ module LinearProgram
     end
 
     def self.intersection(line1, line2)
-      x1, y1 = line1.p0.x, line1.p0.y
-      x2, y2 = line1.p1.x, line1.p1.y
-      x3, y3 = line2.p0.x, line2.p0.y
-      x4, y4 = line2.p1.x, line2.p1.y
-
-      det = CompGeom.determinant(x1-x2, y1-y2, x3-x4, y3-y4)
-      return nil if det.abs <= RMath3D::TOLERANCE # Two lines are parallel
-
-      det12 = CompGeom.determinant(x1, y1, x2, y2)
-      det34 = CompGeom.determinant(x3, y3, x4, y4)
-
-      int_x = CompGeom.determinant(det12, x1-x2, det34, x3-x4) / det
-      int_y = CompGeom.determinant(det12, y1-y2, det34, y3-y4) / det
-
-      return RVec2.new(int_x, int_y);
+      return Intersection.get_lines_intersection(line1.p0, line1.p1, line2.p0, line2.p1)
     end
 
-    # Returns true if two lines are parallel.
     def self.parallel?(line1, line2)
-      x1, y1 = line1.p0.x, line1.p0.y
-      x2, y2 = line1.p1.x, line1.p1.y
-      x3, y3 = line2.p0.x, line2.p0.y
-      x4, y4 = line2.p1.x, line2.p1.y
-
-      det = CompGeom.determinant(x1-x2, y1-y2, x3-x4, y3-y4)
-      return det.abs <= RMath3D::TOLERANCE
+      return Intersection.test_lines_parallel(line1.p0, line1.p1, line2.p0, line2.p1)
     end
 
     # Returns true if two line constraints make no common feasible region.
@@ -147,7 +127,14 @@ module LinearProgram
     constraints.each_with_index do |h_i, i|
       next if h_i.inside(vtx_current) # puts "line=(#{h_i.p0}, #{h_i.p1}), vtx_current=#{vtx_current} : #{h_i.inside(vtx_current) ? 'inside' : 'outside'}"
 
+      # [Needs ORCA-specific process here] test line-sphere intersection
+      # -> return false if no intersections found. This means that the max-speed
+      # circle is fully outside of the newly-added half-space.
+
+      #
       # 1D LP
+      #
+
       # - Build 1D feasible region [boundary_l, boundary_r] incrementally.
       # - Return false if this problem is proved infeasible.
       boundary_l = -Float::MAX # Left  (Lower bound in 1D LP)
@@ -169,6 +156,9 @@ module LinearProgram
         end
       end
       break if vtx_current == nil
+
+      # [Needs ORCA-specific process here]
+      # The optimization function is the distance to the preferred velocity.
 
       vtx_current = if RVec2.dot(objective, h_i.direction) > 0
                       h_i.position + boundary_r * h_i.direction
@@ -213,4 +203,12 @@ if __FILE__ == $0
 =end
   objective = RVec2.new(-1.0, -1.0)
   p LinearProgram.solve2DBoundedLP(lines, objective) # -> RVec2(1.333333, 0.33333)
+
+  lines = [
+    # OptMath p.168
+    LinearProgram::Line2D.new(2.0, 8.0, 60.0),
+    LinearProgram::Line2D.new(4.0, 4.0, 60.0),
+  ].shuffle!
+  objective = RVec2.new(29.0, 45.0)
+  p LinearProgram.solve2DBoundedLP(lines, objective) # -> RVec2(10.0, 5.0)
 end

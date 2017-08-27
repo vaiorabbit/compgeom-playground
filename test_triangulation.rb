@@ -6,7 +6,7 @@ require 'glfw'
 require 'rmath3d/rmath3d_plain'
 require_relative 'nanovg'
 require_relative 'compgeom/delaunay'
-require_relative 'compgeom/segment_intersection'
+require_relative 'compgeom/intersection'
 
 OpenGL.load_lib()
 GLFW.load_lib()
