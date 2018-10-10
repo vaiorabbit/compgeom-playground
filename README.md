@@ -3,6 +3,10 @@
 *   Created : 2015-09-08
 *   Last modified : 2016-03-27
 
+<img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_clipping_rb.png" width="150"> <img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_convex_decomposition_rb_0.png" width="150"> <img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_convex_decomposition_rb_1.png" width="150"> <img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_hole_polygon_rb_0.png" width="150">
+
+<img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_hole_polygon_rb_1.png" width="150"> <img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_linear_program_rb.png" width="150"> <img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_triangulation_rb.png" width="150"> <img src="https://raw.githubusercontent.com/vaiorabbit/compgeom-playground/master/doc/test_voronoi_rb.png" width="150">
+
 
 ## Prerequisites ##
 
