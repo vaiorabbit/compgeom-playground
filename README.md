@@ -6,7 +6,9 @@
 
 ## Prerequisites ##
 
-*   GLFW http://www.glfw.org/download.html
+*   GLFW DLL
+    *   https://www.glfw.org (Windows)
+    *   $ brew install glfw3 (macOS)
 
 *   Ruby-FFI https://github.com/ffi/ffi
 	*   nanovg.rb depends on it.
@@ -22,10 +24,45 @@
 *   rmath3d https://github.com/vaiorabbit/rmath3d
 	*   run 'gem install rmath3d_plain'
 
+## How to run ##
+
+1.  Put glfw3.dll (Windows) / libglfw.dylib (macOS) here
+    *   or specify path to the GLFW DLL as the argument of 'GLFW.load_lib()'. See perfume_dance.rb
+        *   ex.) GLFW.load_lib('libglfw3.dylib', '/usr/local/lib')  (macOS)
+2.  $ ruby test_voronoi.rb, etc.
+
+## Operation ##
+
+*   Common
+    *   Esc     : Quit
+    *   R       : Reset
+    *   Mouse L : Put new polygon vertex
+
+*   test_clipping.rb
+    *   Space   : Switch editing polygon between outer(blue) and inner(red)
+    *   C       : Execute clipping
+    *   Ctrl+Z  : Undo polygon vertex addition
+
+*   test_convex_decomposition.rb
+    *   Space   : Switch editing polygon between outer(blue) and inner(red)
+    *   D       : Execute decomposition
+    *   M       : Merge inner polygon
+    *   Ctrl+Z  : Undo polygon vertex addition
+
+*   test_hole_polygon.rb
+    *   Space   : Switch editing polygon between outer(blue) and inner(red)
+    *   M       : Merge inner polygon
+    *   Ctrl+Z  : Undo polygon vertex addition
+
+*   test_triangulation.rb
+    *   Space   : Switch editing polygon between outer(blue) and inner(red)
+    *   T       : Execute triangulation
+    *   Ctrl+Z  : Undo polygon vertex addition
+
 ### Copyright Notice ###
 
 	CompGeom-Playground
-	Copyright (c) 2015-2016 vaiorabbit
+	Copyright (c) 2015-2018 vaiorabbit
 	
 	This software is provided 'as-is', without any express or implied
 	warranty. In no event will the authors be held liable for any damages

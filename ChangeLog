@@ -1,4 +1,8 @@
-2017-08-28  vaiorabbit  <http://twitter.com/vaiorabbit>
+2018-10-10  vaiorabbit
+
+	* Added README description.
+
+2017-08-28  vaiorabbit
 
 	* compgeom/clipping.rb, intersection.rb, polygon.rb: Added.
 	* test_clipping.rb: Added
